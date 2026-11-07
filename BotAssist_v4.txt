@@ -1,0 +1,2427 @@
+--// ASSIST HUB (LocalScript)  v4.0  — BLACK & GOLD EDITION  (รวม BotAssist + PlayerAssist)
+--// วางที่: StarterPlayer > StarterPlayerScripts  (ต้องเป็น LocalScript)
+--// ⚠ ลบ BotAssist / PlayerAssist ตัวเก่าออกก่อน (ไม่งั้นจะมีเมนูซ้อนและแย่งกันหมุนกล้อง)
+--// ใช้กับแมพของตัวเอง
+--//
+--// สคริปต์เดียว สลับโหมดได้ที่แท็บ "Mode" (แท็บล่างสุดของแถบซ้าย)
+--//   สวิตช์ใหญ่: ซ้าย = BOT (Humanoid ที่ไม่ใช่ผู้เล่น) | ขวา = PLAYER (ผู้เล่นคนอื่น)
+--//   เริ่มต้นที่ PLAYER ทุกครั้งที่เข้าเกม
+--//
+--// วิธีสลับโหมด (กันบั๊ก):
+--//   ไม่สร้าง GUI ใหม่ — ใช้เมนูเดียวตลอด สลับแค่ "ชุดเป้าหมาย" ที่อยู่เบื้องหลัง
+--//   ตอนสลับ: (1) เก็บค่า Team Check ของโหมดเก่า (2) ตัด connection ทั้งหมดของโหมดเก่า
+--//            (3) ลบ ESP / Highlight / ป้าย / เส้นของทุกเป้า (4) เคลียร์เป้าที่ล็อกอยู่ + ปิดล็อก
+--//            (5) เปลี่ยน runToken เพื่อให้งานที่ค้างอยู่ (task.spawn / defer / ลูปสแกน) ของโหมดเก่าเลิกเอง
+--//            แล้วค่อยเริ่มโหมดใหม่ → ไม่มีของเก่าตกค้างมาปนกับของใหม่
+--//   ค่า Team Check แยกจำต่อโหมด (Bot = ปิด, Player = เปิด เป็นค่าเริ่มต้น) ส่วนค่าอื่นใช้ร่วมกัน
+--//
+--// PC: กดค้างคลิกขวา = ล็อก | RightShift = เปิด/ปิดเมนู
+--// มือถือ: ปุ่ม LOCK (แตะ = เปิด/ปิดล็อก) | ปุ่ม MENU (แตะ = เปิดเมนู) | ลากปุ่มเพื่อย้ายได้
+--// คีย์ลัดบนคอม: RightShift = เมนู | X = ล็อกเปิด/ปิด | Z = Aimbot เปิด/ปิด | C = ESP เปิด/ปิด
+--//   เปลี่ยนปุ่มได้ในเกมที่แท็บ "Keys" (คลิกแถว แล้วกดปุ่มใหม่ | Esc = ยกเลิก | Backspace = ล้างปุ่ม)
+--//   หรือแก้ค่าเริ่มต้นที่ KEY_DEFS ด้านบน
+--//
+--// Bot mode: Team Check ใช้ Attribute ชื่อ "Team" ที่โมเดลบอท (ชื่อทีม หรือ BrickColor)
+--// Player mode: Team Check ใช้ระบบ Teams ของ Roblox
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Camera = workspace.CurrentCamera
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	Camera = workspace.CurrentCamera
+end)
+
+-- โหมดที่เริ่มต้น: "Player" หรือ "Bot"
+local START_MODE = "Player"
+
+-- (โหมด Bot) ถ้าบอทอยู่ในโฟลเดอร์เดียว ใส่ตรงนี้ เช่น workspace:WaitForChild("Enemies")
+-- (nil = สแกนทั้ง workspace)
+local BOT_CONTAINER = nil
+
+--==================== SETTINGS ====================--
+local S = {
+	AimEnabled = true,
+	HoldRMB = true, -- PC: กดค้างคลิกขวาเพื่อล็อก
+	FloatingToggle = UserInputService.TouchEnabled,
+	ButtonScale = 100, -- % ขนาดปุ่มลอย (MENU / LOCK)
+	ShowFOV = true,
+	FOVRadius = 150,
+	Smoothness = 0, -- 0 = Snap
+	MaxAimDistance = 1000,
+	Sticky = true, -- ล็อกเป้าเดิมไว้จนกว่าจะตาย/ไกลเกิน
+	WallCheck = false,
+	TeamCheck = true, -- (ค่าจริงถูกตั้งตามโหมดตอนเริ่ม / ตอนสลับ ดู modeTeam)
+	Priority = "Crosshair", -- "Crosshair" หรือ "Distance"
+	AimPart = "Head", -- ดู PART_OPTIONS
+	ESP = {
+		Enabled = true, -- สวิตช์หลัก ESP (คีย์ลัด C)
+		Tracers = false,
+		Names = true,
+		Chams = true,
+		Distance = true,
+		Health = true, -- แสดงเลือด
+		HealthBar = true, -- หลอดเลือด
+		HealthStyle = "HP/MAXHP", -- "HP" หรือ "HP/MAXHP"
+		TeamCheck = true, -- (เหมือนด้านบน)
+		MaxRange = 1000,
+	},
+}
+
+-- ค่า Team Check ของแต่ละโหมด (จำแยกกัน: สลับไปมาแล้วค่าของแต่ละโหมดยังอยู่)
+local modeTeam = {
+	Bot = { Aim = false, ESP = false },
+	Player = { Aim = true, ESP = true },
+}
+
+-- คีย์ลัดบนคอม: ปรับค่าเริ่มต้นได้ตรงนี้ และเปลี่ยนในเกมได้ที่แท็บ "Keys" (คลิกแถว แล้วกดปุ่มใหม่)
+-- default = nil → ยังไม่ผูกปุ่ม | ค่าที่เปลี่ยนในเกมจะรีเซ็ตเมื่อเข้าเกมใหม่ (สคริปต์ฝั่งผู้เล่นเก็บค่าถาวรไม่ได้)
+local KEY_DEFS = {
+	{ id = "Menu", label = "Open / Close Menu", default = Enum.KeyCode.RightShift },
+	{ id = "LockToggle", label = "Lock On / Off (Toggle)", default = Enum.KeyCode.X },
+	{ id = "LockHold", label = "Lock (Hold)", default = nil },
+	{ id = "Aim", label = "Aimbot On / Off", default = Enum.KeyCode.Z },
+	{ id = "ESP", label = "ESP On / Off", default = Enum.KeyCode.C },
+}
+local HAS_KEYBOARD = UserInputService.KeyboardEnabled
+
+local PART_OPTIONS = { "Head", "Torso", "HumanoidRootPart", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "Closest" }
+
+-- รองรับทั้ง R15 และ R6
+local PART_NAMES = {
+	["Head"] = { "Head" },
+	["Torso"] = { "UpperTorso", "Torso" },
+	["HumanoidRootPart"] = { "HumanoidRootPart" },
+	["Left Arm"] = { "LeftUpperArm", "Left Arm" },
+	["Right Arm"] = { "RightUpperArm", "Right Arm" },
+	["Left Leg"] = { "LeftUpperLeg", "Left Leg" },
+	["Right Leg"] = { "RightUpperLeg", "Right Leg" },
+}
+local BODY_SET = {}
+for _, list in pairs(PART_NAMES) do
+	for _, n in ipairs(list) do
+		BODY_SET[n] = true
+	end
+end
+
+--==================== SHARED STATE ====================--
+-- registry[model] = { hum, conns, hl (Highlight), tag (ป้ายชื่อ/เลือด), line (tracer), player (เฉพาะโหมด Player) }
+-- เก็บเป้าของ "โหมดที่ใช้งานอยู่" เท่านั้น — ตอนสลับโหมดจะถูกล้างทิ้งทั้งหมด
+local registry = {}
+local currentMode = nil -- "Bot" | "Player"
+local modeConns = {} -- connection ระดับโหมด (ตัดทั้งหมดตอนสลับ)
+local runToken = 0 -- เปลี่ยนทุกครั้งที่หยุดโหมด → งานค้างของโหมดเก่าเช็กแล้วเลิกเอง
+
+local lockToggled, lockActive, hasTarget = false, false, false
+local rmbDown = false
+local currentTarget = nil
+
+--==================== TARGET HELPERS ====================--
+local function fallbackPart(model)
+	return model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+end
+
+local function getPart(model, choice)
+	local names = PART_NAMES[choice]
+	if names then
+		for _, n in ipairs(names) do
+			local p = model:FindFirstChild(n)
+			if p and p:IsA("BasePart") then
+				return p
+			end
+		end
+	end
+	return fallbackPart(model)
+end
+
+local function closestPart(model, center)
+	local best, bestD = nil, math.huge
+	for _, p in ipairs(model:GetChildren()) do
+		if p:IsA("BasePart") and BODY_SET[p.Name] then
+			local sp, on = Camera:WorldToViewportPoint(p.Position)
+			if on then
+				local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+				if d < bestD then
+					best, bestD = p, d
+				end
+			end
+		end
+	end
+	return best or fallbackPart(model)
+end
+
+local function isAlive(model, info)
+	local h = info.hum
+	return h ~= nil and h.Parent == model and h.Health > 0 and model:IsDescendantOf(workspace)
+end
+
+local MODES = {} -- นิยามแต่ละโหมดอยู่ด้านล่าง (MODE DEFINITIONS)
+
+local function isSameTeam(model, info)
+	local m = MODES[currentMode]
+	if m and m.sameTeam(model, info) then
+		return true
+	end
+	return false
+end
+
+local function destroyESP(info)
+	if info.hl then
+		info.hl:Destroy()
+		info.hl = nil
+	end
+	if info.line then
+		info.line:Destroy()
+		info.line = nil
+	end
+	if info.tag then
+		info.tag.frame:Destroy()
+		info.tag = nil
+	end
+end
+
+local function unregister(model)
+	local info = registry[model]
+	if not info then
+		return
+	end
+	registry[model] = nil
+	for _, c in ipairs(info.conns) do
+		c:Disconnect()
+	end
+	destroyESP(info)
+end
+
+--==================== MODE DEFINITIONS ====================--
+-- แต่ละโหมดมี: hook(token) = ต่อ event | scan(token) = สแกนหาเป้า | sameTeam | nameOf | fullName
+-- ทุกอย่างที่ทำงานแบบ async รับ token มาเช็ก: ถ้า token ไม่ตรง runToken (= สลับโหมดไปแล้ว) ให้เลิกทันที
+
+-- ---------- BOT: Humanoid ที่ไม่ใช่ผู้เล่น ----------
+local function registerHumanoid(hum, token)
+	if token ~= runToken or not hum or not hum:IsA("Humanoid") then
+		return
+	end
+	local model = hum.Parent
+	if not model or not model:IsA("Model") or registry[model] then
+		return
+	end
+	if hum.Health <= 0 then
+		return
+	end
+	if Players:GetPlayerFromCharacter(model) then
+		return -- ผู้เล่น ไม่ใช่บอท
+	end
+	if BOT_CONTAINER and not model:IsDescendantOf(BOT_CONTAINER) then
+		return
+	end
+	local info = { hum = hum, conns = {} }
+	registry[model] = info
+	table.insert(
+		info.conns,
+		model.AncestryChanged:Connect(function()
+			if not model:IsDescendantOf(workspace) then
+				unregister(model)
+			end
+		end)
+	)
+	table.insert(
+		info.conns,
+		hum.Died:Connect(function()
+			unregister(model)
+		end)
+	)
+end
+
+MODES.Bot = {
+	label = "BOT",
+	singular = "bot",
+	plural = "bots",
+	sameTeam = function(model)
+		-- ทีมของบอท: Attribute "Team" ที่โมเดลบอท (ชื่อทีม หรือ BrickColor)
+		local myTeam = LocalPlayer.Team
+		if not myTeam then
+			return false
+		end
+		local t = model:GetAttribute("Team")
+		if t == nil then
+			return false
+		end
+		return t == myTeam.Name or t == myTeam.TeamColor
+	end,
+	nameOf = function(model)
+		return model.Name
+	end,
+	fullName = function(model)
+		return model:GetFullName()
+	end,
+	scan = function(token)
+		local root = BOT_CONTAINER or workspace
+		for _, d in ipairs(root:GetDescendants()) do
+			if d:IsA("Humanoid") then
+				registerHumanoid(d, token)
+			end
+		end
+	end,
+	hook = function(token)
+		-- บอทเกิดใหม่ → จับทันที (defer เพื่อให้ Parent พร้อมก่อน)
+		table.insert(
+			modeConns,
+			workspace.DescendantAdded:Connect(function(d)
+				if d:IsA("Humanoid") then
+					task.defer(registerHumanoid, d, token)
+				end
+			end)
+		)
+	end,
+}
+
+-- ---------- PLAYER: ผู้เล่นคนอื่น (ข้ามตัวเองเสมอ) ----------
+local function registerCharacter(player, char, token)
+	if token ~= runToken or player == LocalPlayer or not char or registry[char] then
+		return
+	end
+	local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
+	-- (WaitForChild รอได้ → เช็กซ้ำหลังรอ: สลับโหมดไปแล้ว / ลงทะเบียนไปแล้ว / ตัวละครหายไปแล้ว)
+	if token ~= runToken or not hum or registry[char] or not char:IsDescendantOf(workspace) then
+		return
+	end
+	if hum.Health <= 0 then
+		return
+	end
+	local info = { player = player, hum = hum, conns = {} }
+	registry[char] = info
+	table.insert(
+		info.conns,
+		char.AncestryChanged:Connect(function()
+			if not char:IsDescendantOf(workspace) then
+				unregister(char)
+			end
+		end)
+	)
+	table.insert(
+		info.conns,
+		hum.Died:Connect(function()
+			unregister(char)
+		end)
+	)
+end
+
+MODES.Player = {
+	label = "PLAYER",
+	singular = "player",
+	plural = "players",
+	sameTeam = function(_, info)
+		-- เพื่อนร่วมทีม: ทั้งสองคนต้องมีทีม และเป็นทีมเดียวกัน (แมพไม่มีทีม = ไม่มีใครเป็นเพื่อนร่วมทีม)
+		local myTeam = LocalPlayer.Team
+		local theirTeam = info.player and info.player.Team
+		return myTeam ~= nil and theirTeam ~= nil and myTeam == theirTeam
+	end,
+	nameOf = function(_, info)
+		return info.player.DisplayName
+	end,
+	fullName = function(_, info)
+		return info.player.Name
+	end,
+	scan = function(token)
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LocalPlayer and p.Character and not registry[p.Character] then
+				task.spawn(registerCharacter, p, p.Character, token)
+			end
+		end
+	end,
+	hook = function(token)
+		local function hookPlayer(player)
+			if player == LocalPlayer then
+				return
+			end
+			if player.Character then
+				task.spawn(registerCharacter, player, player.Character, token)
+			end
+			table.insert(
+				modeConns,
+				player.CharacterAdded:Connect(function(char)
+					task.spawn(registerCharacter, player, char, token)
+				end)
+			)
+			table.insert(
+				modeConns,
+				player.CharacterRemoving:Connect(function(char)
+					unregister(char)
+				end)
+			)
+		end
+		for _, p in ipairs(Players:GetPlayers()) do
+			hookPlayer(p)
+		end
+		table.insert(modeConns, Players.PlayerAdded:Connect(hookPlayer))
+		table.insert(
+			modeConns,
+			Players.PlayerRemoving:Connect(function(p)
+				if p.Character then
+					unregister(p.Character)
+				end
+			end)
+		)
+	end,
+}
+
+-- ---------- เริ่ม / หยุดโหมด ----------
+-- ลูปสแกนซ้ำทุก 3 วิ (กันบอทที่ Humanoid มาทีหลัง / ตัวละครที่โหลดช้า / ถูกสตรีมกลับเข้ามา)
+-- ผูกกับ token: สลับโหมดแล้วลูปของโหมดเก่าจะหยุดเอง
+local function startMode()
+	local token = runToken
+	local m = MODES[currentMode]
+	m.hook(token)
+	m.scan(token)
+	task.spawn(function()
+		while token == runToken do
+			task.wait(3)
+			if token ~= runToken then
+				break
+			end
+			m.scan(token)
+		end
+	end)
+end
+
+-- ลบการทำงานของโหมดปัจจุบันให้เกลี้ยง
+local function stopMode()
+	runToken = runToken + 1 -- ทำให้ task.spawn / defer / ลูปสแกนของโหมดเก่าเลิกเองทั้งหมด
+	for _, c in ipairs(modeConns) do
+		c:Disconnect()
+	end
+	table.clear(modeConns)
+	local list = {}
+	for model in pairs(registry) do
+		table.insert(list, model)
+	end
+	for _, model in ipairs(list) do
+		unregister(model) -- ตัด connection ของเป้า + ลบ Highlight / ป้าย / เส้น
+	end
+	table.clear(registry)
+end
+
+--==================== UI THEME : BLACK & GOLD ====================--
+-- ปรับสีทั้งหมดได้ที่บล็อกนี้ที่เดียว
+local WHITE = Color3.new(1, 1, 1)
+local BLACK = Color3.new(0, 0, 0)
+
+-- ทอง 3 ระดับ (แชมเปญ → ทอง → บรอนซ์)
+local GOLD_HI = Color3.fromRGB(255, 236, 170)
+local GOLD = Color3.fromRGB(226, 182, 80)
+local GOLD_LO = Color3.fromRGB(150, 104, 34)
+
+-- พื้นหลังโทนดำอุ่น
+local BG_TOP = Color3.fromRGB(32, 27, 20)
+local BG_BOT = Color3.fromRGB(9, 7, 5)
+local SIDE = Color3.fromRGB(13, 11, 9)
+local ROW = Color3.fromRGB(27, 23, 18)
+local FIELD = Color3.fromRGB(14, 12, 9)
+local TRACK_OFF = Color3.fromRGB(58, 51, 41)
+local KNOB_OFF = Color3.fromRGB(178, 168, 148)
+local KNOB_ON = Color3.fromRGB(28, 20, 8)
+local DARK_TEXT = Color3.fromRGB(24, 17, 7)
+local DARK_SUB = Color3.fromRGB(86, 62, 22) -- ตัวอักษรรองบนแผ่นทอง
+
+-- ตัวอักษร
+local TEXT = Color3.fromRGB(246, 240, 226)
+local DIM = Color3.fromRGB(152, 140, 116)
+
+-- สถานะ
+local OFF_C = Color3.fromRGB(214, 84, 92) -- ปิด
+local WARN_C = Color3.fromRGB(240, 186, 72) -- เปิดล็อก แต่ยังไม่เจอเป้า
+local LOCKED_C = Color3.fromRGB(255, 244, 205) -- ล็อกเป้าอยู่
+local ENEMY_COLOR = Color3.fromRGB(225, 60, 75) -- สีตัวเป้า (Chams)
+
+local EDGE_T = 0.88 -- ความจางของเส้นขอบแถว
+
+-- สีเลือด: แดงทับทิม → อำพัน → ทองแชมเปญ (เต็ม)
+local HP_LOW = Color3.fromRGB(214, 70, 80)
+local HP_MID = Color3.fromRGB(236, 160, 60)
+local HP_FULL = Color3.fromRGB(255, 238, 175)
+local function hpColor(ratio)
+	if ratio < 0.5 then
+		return HP_LOW:Lerp(HP_MID, ratio / 0.5)
+	end
+	return HP_MID:Lerp(HP_FULL, (ratio - 0.5) / 0.5)
+end
+
+local GOLD_SEQ = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, GOLD_HI),
+	ColorSequenceKeypoint.new(0.35, GOLD),
+	ColorSequenceKeypoint.new(0.7, GOLD_LO),
+	ColorSequenceKeypoint.new(1, GOLD),
+})
+
+-- ฟอนต์หัวข้อแบบเซอริฟหรู (ถ้าเวอร์ชันนี้ไม่มี จะถอยกลับไปใช้ Gotham ให้เอง)
+local function pickFont(name, fallback)
+	local ok, f = pcall(function()
+		return Enum.Font[name]
+	end)
+	if ok and f then
+		return f, true
+	end
+	return fallback, false
+end
+local SERIF, HAS_SERIF = pickFont("Bodoni", Enum.Font.GothamBold)
+
+local function new(class, props, parent)
+	local o = Instance.new(class)
+	for k, v in pairs(props) do
+		o[k] = v
+	end
+	o.Parent = parent
+	return o
+end
+
+local function corner(inst, r)
+	return new("UICorner", { CornerRadius = UDim.new(0, r or 8) }, inst)
+end
+
+-- สำคัญ: ปุ่ม/ข้อความต้องใช้ Border ไม่งั้นเส้นจะไปตกที่ตัวอักษร
+local function stroke(inst, color, thick, transp)
+	return new("UIStroke", {
+		Color = color,
+		Thickness = thick or 1,
+		Transparency = transp or 0,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, inst)
+end
+
+local function gradient(inst, c1, c2, rot)
+	return new("UIGradient", { Color = ColorSequence.new(c1, c2), Rotation = rot or 90 }, inst)
+end
+
+-- ไล่สีทองแบบโลหะ (ใช้กับเส้นขอบ / ตัวอักษร ที่ไม่มีสีพื้นของตัวเอง)
+local function goldGradient(inst, rot)
+	return new("UIGradient", { Color = GOLD_SEQ, Rotation = rot or 45 }, inst)
+end
+
+-- เส้นคั่นทองจางหายทั้งสองปลาย
+local function goldLine(parent, props)
+	props.BackgroundColor3 = GOLD
+	props.BorderSizePixel = 0
+	local l = new("Frame", props, parent)
+	new("UIGradient", {
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.5, 0.25),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+	}, l)
+	return l
+end
+
+local function tween(inst, t, props)
+	TweenService:Create(inst, TweenInfo.new(t, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
+end
+
+-- เอฟเฟกต์เมาส์ชี้ (เฉพาะเครื่องที่มีเมาส์ — มือถือไม่ใช้ กันค้างสถานะ hover)
+local HAS_MOUSE = UserInputService.MouseEnabled
+local function hover(inst, st, onT, offT)
+	if not HAS_MOUSE then
+		return
+	end
+	inst.MouseEnter:Connect(function()
+		tween(st, 0.1, { Transparency = onT })
+	end)
+	inst.MouseLeave:Connect(function()
+		tween(st, 0.1, { Transparency = offT })
+	end)
+end
+
+local orderCounter = 0
+local function nextOrder()
+	orderCounter = orderCounter + 1
+	return orderCounter
+end
+
+local function isPointer(input)
+	return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
+end
+
+-- ติดตาม "นิ้วเดียวกัน" เท่านั้น (นิ้วที่กดจอยสติ๊ก/หมุนกล้องจะไม่ไปรบกวน)
+local function isSameMove(input, dragInput, dragType)
+	if dragType == Enum.UserInputType.Touch then
+		return input == dragInput
+	end
+	return input.UserInputType == Enum.UserInputType.MouseMovement
+end
+local function isSameEnd(input, dragInput, dragType)
+	if dragType == Enum.UserInputType.Touch then
+		return input == dragInput
+	end
+	return input.UserInputType == dragType
+end
+
+--==================== GUI ROOT ====================--
+local oldGui = PlayerGui:FindFirstChild("AssistHub")
+if oldGui then
+	oldGui:Destroy()
+end
+
+local gui = new("ScreenGui", {
+	Name = "AssistHub",
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	DisplayOrder = 50,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, PlayerGui)
+
+local espLayer = new("Frame", { Name = "ESP", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 1, Active = false }, gui)
+
+-- FOV circle (วงทองไล่เฉด หมุนวิบวับเบา ๆ)
+local fov = new("Frame", {
+	Name = "FOV",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(300, 300),
+	BackgroundTransparency = 1,
+	ZIndex = 2,
+	Visible = false,
+}, gui)
+new("UICorner", { CornerRadius = UDim.new(1, 0) }, fov)
+local fovStroke = stroke(fov, WHITE, 1.5, 0.1)
+local fovGrad = goldGradient(fovStroke, 45)
+
+--==================== TOAST (แจ้งสถานะตอนกดคีย์ลัด / สลับโหมด) ====================--
+local toast
+do
+	local toastFrame = new("Frame", {
+		Name = "Toast",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 22),
+		Size = UDim2.fromOffset(190, 34),
+		BackgroundColor3 = Color3.fromRGB(14, 12, 9),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 30,
+		Visible = false,
+		Active = false,
+	}, gui)
+	corner(toastFrame, 17)
+	local toastStroke = stroke(toastFrame, GOLD, 1.5, 1)
+	local toastLabel = new("TextLabel", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = GOLD_HI,
+		TextTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+	}, toastFrame)
+	local toastToken = 0
+	local toastTweens = {}
+	local function toastFade(inst, props)
+		local tw = TweenService:Create(inst, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props)
+		table.insert(toastTweens, tw)
+		tw:Play()
+	end
+	toast = function(msg)
+		toastToken = toastToken + 1
+		local my = toastToken
+		for _, tw in ipairs(toastTweens) do
+			tw:Cancel() -- ยกเลิกการค่อย ๆ จางของข้อความเก่า ไม่งั้นจะมาทับข้อความใหม่
+		end
+		toastTweens = {}
+		toastLabel.Text = msg
+		toastFrame.Visible = true
+		toastFrame.BackgroundTransparency = 0.1
+		toastStroke.Transparency = 0.1
+		toastLabel.TextTransparency = 0
+		task.delay(1.3, function()
+			if toastToken ~= my then
+				return
+			end
+			toastFade(toastFrame, { BackgroundTransparency = 1 })
+			toastFade(toastStroke, { Transparency = 1 })
+			toastFade(toastLabel, { TextTransparency = 1 })
+			task.delay(0.4, function()
+				if toastToken == my then
+					toastFrame.Visible = false
+				end
+			end)
+		end)
+	end
+end
+
+--==================== MAIN PANEL ====================--
+-- panel = กรอบโปร่งใส (เปิด/ปิด + ย่อขยายตอนเปิด) | card = ตัวการ์ดจริง | shadow = เงาหลายชั้น
+local panel = new("Frame", {
+	Name = "Panel",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromScale(0.5, 0.86),
+	BackgroundTransparency = 1,
+	Visible = false,
+	ZIndex = 10,
+}, gui)
+new("UISizeConstraint", { MinSize = Vector2.new(440, 250), MaxSize = Vector2.new(640, 360) }, panel)
+local panelScale = new("UIScale", { Scale = 1 }, panel)
+
+local function shadow(pad, drop, transp, r)
+	local s = new("Frame", {
+		Position = UDim2.fromOffset(-pad, -pad + drop),
+		Size = UDim2.new(1, pad * 2, 1, pad * 2),
+		BackgroundColor3 = BLACK,
+		BackgroundTransparency = transp,
+		BorderSizePixel = 0,
+		ZIndex = 1,
+		Active = false,
+	}, panel)
+	corner(s, r)
+end
+shadow(28, 10, 0.9, 40)
+shadow(16, 6, 0.82, 30)
+shadow(6, 3, 0.68, 20)
+
+local card = new("Frame", {
+	Name = "Card",
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = WHITE,
+	BorderSizePixel = 0,
+	ZIndex = 2,
+	Active = true,
+}, panel)
+corner(card, 14)
+gradient(card, BG_TOP, BG_BOT, 90)
+local cardStroke = stroke(card, WHITE, 2)
+local cardGrad = goldGradient(cardStroke, 45)
+
+-- แสงทองจาง ๆ ด้านบนการ์ด
+local sheen = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 96),
+	BackgroundColor3 = GOLD,
+	BorderSizePixel = 0,
+	Active = false,
+}, card)
+corner(sheen, 14)
+new("UIGradient", { Transparency = NumberSequence.new(0.9, 1), Rotation = 90 }, sheen)
+
+-- Sidebar
+local side = new("Frame", { Size = UDim2.new(0, 132, 1, 0), BackgroundColor3 = SIDE, BorderSizePixel = 0 }, card)
+corner(side, 14)
+new("Frame", { Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromScale(0.5, 1), BackgroundColor3 = SIDE, BorderSizePixel = 0 }, side)
+new("Frame", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.fromScale(1, 0),
+	Size = UDim2.new(0, 1, 1, 0),
+	BackgroundColor3 = GOLD,
+	BackgroundTransparency = 0.75,
+	BorderSizePixel = 0,
+}, side)
+
+local title = new("TextLabel", {
+	Position = UDim2.fromOffset(0, 11),
+	Size = UDim2.new(1, 0, 0, 24),
+	BackgroundTransparency = 1,
+	Text = "ASSIST HUB",
+	TextColor3 = WHITE,
+	Font = SERIF,
+	TextSize = HAS_SERIF and 18 or 14,
+}, side)
+goldGradient(title, 0)
+-- บรรทัดใต้ชื่อ: โชว์โหมดที่ใช้งานอยู่ (อัปเดตตอนสลับโหมด)
+local modeSubtitle = new("TextLabel", {
+	Position = UDim2.fromOffset(0, 35),
+	Size = UDim2.new(1, 0, 0, 14),
+	BackgroundTransparency = 1,
+	Text = "",
+	TextColor3 = GOLD,
+	Font = Enum.Font.GothamBold,
+	TextSize = 10,
+}, side)
+-- เส้นคั่นทอง + เพชรกลางเส้น
+goldLine(side, { Position = UDim2.fromOffset(12, 57), Size = UDim2.new(1, -24, 0, 1) })
+new("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0, 57),
+	Size = UDim2.fromOffset(7, 7),
+	Rotation = 45,
+	BackgroundColor3 = GOLD_HI,
+	BorderSizePixel = 0,
+}, side)
+
+-- รายการแท็บ (เลื่อนได้ กันกรณีจอเตี้ยแล้วแท็บล้น)
+local tabList = new("ScrollingFrame", {
+	Position = UDim2.fromOffset(0, 68),
+	Size = UDim2.new(1, 0, 1, -94),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 0,
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	ScrollingDirection = Enum.ScrollingDirection.Y,
+}, side)
+new("UIListLayout", {
+	Padding = UDim.new(0, 4),
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	SortOrder = Enum.SortOrder.LayoutOrder,
+}, tabList)
+
+new("TextLabel", {
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -10),
+	Size = UDim2.new(1, 0, 0, 12),
+	BackgroundTransparency = 1,
+	Text = "v4.0  ·  GOLD EDITION",
+	TextColor3 = DIM,
+	TextTransparency = 0.4,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 9,
+}, side)
+
+-- Header (ชื่อหน้า + ปุ่มปิด)
+local header = new("Frame", { Position = UDim2.fromOffset(132, 0), Size = UDim2.new(1, -132, 0, 46), BackgroundTransparency = 1 }, card)
+local pageTitle = new("TextLabel", {
+	Position = UDim2.fromOffset(16, 0),
+	Size = UDim2.new(1, -66, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "AIMBOT",
+	TextColor3 = GOLD_HI,
+	Font = SERIF,
+	TextSize = HAS_SERIF and 20 or 15,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, header)
+goldLine(header, { Position = UDim2.fromOffset(14, 45), Size = UDim2.new(1, -28, 0, 1) })
+
+local closeBtn = new("TextButton", {
+	AnchorPoint = Vector2.new(1, 0.5),
+	Position = UDim2.new(1, -10, 0.5, -1),
+	Size = UDim2.fromOffset(32, 32),
+	BackgroundColor3 = ROW,
+	Text = "",
+	AutoButtonColor = false,
+	BorderSizePixel = 0,
+}, header)
+new("UICorner", { CornerRadius = UDim.new(1, 0) }, closeBtn)
+local closeStroke = stroke(closeBtn, GOLD, 1.2, 0.45)
+for _, rot in ipairs({ 45, -45 }) do
+	new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(14, 2),
+		Rotation = rot,
+		BackgroundColor3 = GOLD_HI,
+		BorderSizePixel = 0,
+	}, closeBtn)
+end
+hover(closeBtn, closeStroke, 0, 0.45)
+
+local body = new("Frame", { Position = UDim2.fromOffset(138, 52), Size = UDim2.new(1, -144, 1, -60), BackgroundTransparency = 1 }, card)
+
+--==================== UI BUILDERS ====================--
+local pages, tabBtns = {}, {}
+local stopListening -- เลิกรอปุ่มใหม่ (กำหนดค่าที่ส่วน HOTKEYS)
+local pageTitleText = pageTitle
+
+local function newPage(name)
+	local p = new("ScrollingFrame", {
+		Name = name,
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = GOLD,
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		Visible = false,
+	}, body)
+	new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, p)
+	new("UIPadding", { PaddingBottom = UDim.new(0, 8), PaddingRight = UDim.new(0, 4) }, p)
+	pages[name] = p
+	return p
+end
+
+local function showPage(name)
+	if stopListening then
+		stopListening()
+	end
+	for n, p in pairs(pages) do
+		p.Visible = (n == name)
+	end
+	for n, t in pairs(tabBtns) do
+		local on = (n == name)
+		t.glow.Visible = on
+		t.btn.TextColor3 = on and GOLD_HI or DIM
+		t.bar.Visible = on
+	end
+	pageTitleText.Text = string.upper(name)
+end
+
+local function addTab(name)
+	-- wrap = ช่องในรายการ | glow = แสงทองไล่เฉดหลังแท็บที่เลือก | btn = ตัวปุ่ม (พื้นโปร่ง ตัวอักษรไม่โดนเฉด)
+	local wrap = new("Frame", { Size = UDim2.new(1, -18, 0, 32), BackgroundTransparency = 1, LayoutOrder = nextOrder() }, tabList)
+	local glow = new("Frame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+		Visible = false,
+	}, wrap)
+	corner(glow, 9)
+	new("UIGradient", {
+		Color = ColorSequence.new(GOLD, GOLD_LO),
+		Transparency = NumberSequence.new(0.6, 0.93),
+	}, glow)
+	stroke(glow, GOLD, 1, 0.65)
+	local b = new("TextButton", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = name,
+		TextColor3 = DIM,
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		BorderSizePixel = 0,
+		AutoButtonColor = false,
+	}, wrap)
+	local bar = new("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		Size = UDim2.fromOffset(3, 18),
+		BackgroundColor3 = GOLD_HI,
+		BorderSizePixel = 0,
+		Visible = false,
+	}, b)
+	corner(bar, 2)
+	b.Activated:Connect(function()
+		showPage(name)
+	end)
+	tabBtns[name] = { btn = b, bar = bar, glow = glow }
+end
+
+local function rowLabel(parent, text, rightPad)
+	return new("TextLabel", {
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(12, 0),
+		Size = UDim2.new(1, -(rightPad or 60), 1, 0),
+		Text = text,
+		TextColor3 = TEXT,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+	}, parent)
+end
+
+-- พื้นแถว: ไล่เฉดอุ่นจาง ๆ + ขอบทองบาง
+local function rowSkin(r)
+	corner(r, 9)
+	new("UIGradient", { Color = ColorSequence.new(WHITE, Color3.fromRGB(196, 190, 178)), Rotation = 0 }, r)
+	return stroke(r, GOLD, 1, EDGE_T)
+end
+
+local function addSection(page, text)
+	local l = new("TextLabel", {
+		Size = UDim2.new(1, -6, 0, 22),
+		BackgroundTransparency = 1,
+		Text = text,
+		TextColor3 = GOLD,
+		TextTransparency = 0.05,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = nextOrder(),
+	}, page)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 16) }, l)
+	-- เพชรเม็ดเล็กหน้าหัวข้อ
+	new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 6, 0.5, 0),
+		Size = UDim2.fromOffset(6, 6),
+		Rotation = 45,
+		BackgroundColor3 = GOLD,
+		BorderSizePixel = 0,
+	}, l)
+	return l
+end
+
+-- สวิตช์ทุกตัวลงทะเบียนตัวอัปเดตภาพไว้ที่นี่ (คีย์ลัด/สลับโหมดเปลี่ยนค่าแล้วสวิตช์ในเมนูจะขยับตามทันที)
+local toggleSyncers = {}
+local function syncToggles()
+	for _, f in ipairs(toggleSyncers) do
+		f()
+	end
+end
+
+local function addToggle(page, text, tbl, key)
+	local r = new("TextButton", {
+		Size = UDim2.new(1, -6, 0, 42),
+		BackgroundColor3 = ROW,
+		Text = "",
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+		LayoutOrder = nextOrder(),
+	}, page)
+	local rs = rowSkin(r)
+	hover(r, rs, 0.6, EDGE_T)
+	rowLabel(r, text, 70)
+	local track = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -12, 0.5, 0),
+		Size = UDim2.fromOffset(44, 24),
+		BackgroundColor3 = TRACK_OFF,
+		BorderSizePixel = 0,
+	}, r)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
+	-- ชั้นสีทองไล่เฉด: โปร่ง = ปิด / ทึบ = เปิด
+	local trackOn = new("Frame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = WHITE,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}, track)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, trackOn)
+	gradient(trackOn, GOLD_HI, GOLD_LO, 0)
+	local knob = new("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 3, 0.5, 0),
+		Size = UDim2.fromOffset(18, 18),
+		BackgroundColor3 = KNOB_OFF,
+		BorderSizePixel = 0,
+	}, track)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
+	local function refresh(animate)
+		local on = tbl[key]
+		local kp = on and UDim2.new(1, -21, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
+		local kc = on and KNOB_ON or KNOB_OFF
+		local tt = on and 0 or 1
+		if animate then
+			tween(knob, 0.14, { Position = kp, BackgroundColor3 = kc })
+			tween(trackOn, 0.14, { BackgroundTransparency = tt })
+		else
+			knob.Position = kp
+			knob.BackgroundColor3 = kc
+			trackOn.BackgroundTransparency = tt
+		end
+	end
+	refresh(false)
+	r.Activated:Connect(function()
+		tbl[key] = not tbl[key]
+		refresh(true)
+	end)
+	table.insert(toggleSyncers, function()
+		refresh(true)
+	end)
+end
+
+local function addSlider(page, text, min, max, tbl, key, suffix)
+	suffix = suffix or ""
+	local r = new("Frame", { Size = UDim2.new(1, -6, 0, 60), BackgroundColor3 = ROW, BorderSizePixel = 0, LayoutOrder = nextOrder() }, page)
+	local rs = rowSkin(r)
+	hover(r, rs, 0.6, EDGE_T)
+	local lbl = rowLabel(r, text, 90)
+	lbl.Position = UDim2.fromOffset(12, 5)
+	lbl.Size = UDim2.new(1, -90, 0, 22)
+	local valueLbl = new("TextLabel", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -10, 0, 6),
+		Size = UDim2.fromOffset(64, 22),
+		BackgroundColor3 = FIELD,
+		Text = tostring(tbl[key]) .. suffix,
+		TextColor3 = GOLD_HI,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+	}, r)
+	corner(valueLbl, 6)
+	stroke(valueLbl, GOLD, 1, 0.78)
+	-- พื้นที่แตะกว้าง ๆ สำหรับนิ้วมือถือ
+	local hit = new("TextButton", {
+		Position = UDim2.new(0, 12, 0, 30),
+		Size = UDim2.new(1, -24, 0, 26),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+	}, r)
+	local track = new("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.new(1, 0, 0, 6),
+		BackgroundColor3 = FIELD,
+		BorderSizePixel = 0,
+	}, hit)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
+	stroke(track, GOLD, 1, 0.85)
+	local a0 = math.clamp((tbl[key] - min) / (max - min), 0, 1)
+	local fill = new("Frame", { Size = UDim2.fromScale(a0, 1), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, track)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, fill)
+	gradient(fill, GOLD_LO, GOLD_HI, 0)
+	local knob = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(a0, 0.5),
+		Size = UDim2.fromOffset(17, 17),
+		BackgroundColor3 = TEXT,
+		BorderSizePixel = 0,
+	}, track)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
+	stroke(knob, GOLD, 2, 0)
+
+	local dragInput, dragType = nil, nil
+	local function setFromX(x)
+		local a = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+		local v = math.floor(min + (max - min) * a + 0.5)
+		tbl[key] = v
+		a = (v - min) / (max - min)
+		fill.Size = UDim2.fromScale(a, 1)
+		knob.Position = UDim2.fromScale(a, 0.5)
+		valueLbl.Text = tostring(v) .. suffix
+	end
+	local function finish()
+		if dragInput then
+			dragInput, dragType = nil, nil
+			page.ScrollingEnabled = true
+		end
+	end
+	hit.InputBegan:Connect(function(input)
+		if dragInput == nil and isPointer(input) then
+			dragInput, dragType = input, input.UserInputType
+			page.ScrollingEnabled = false
+			setFromX(input.Position.X)
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragInput and isSameMove(input, dragInput, dragType) then
+			setFromX(input.Position.X)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if dragInput and isSameEnd(input, dragInput, dragType) then
+			finish()
+		end
+	end)
+end
+
+-- ตัวเลือกแบบแท็บเล็ก ๆ (เช่น HP / HP/MAXHP) — แผ่นทองสไลด์ไปหาตัวที่เลือก
+local function addSegment(page, text, tbl, key, options)
+	local r = new("Frame", { Size = UDim2.new(1, -6, 0, 46), BackgroundColor3 = ROW, BorderSizePixel = 0, LayoutOrder = nextOrder() }, page)
+	rowSkin(r)
+	local n = #options
+	local segW = n * 78
+	rowLabel(r, text, segW + 24)
+	local seg = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -8, 0.5, 0),
+		Size = UDim2.fromOffset(segW, 32),
+		BackgroundColor3 = FIELD,
+		BorderSizePixel = 0,
+	}, r)
+	corner(seg, 9)
+	stroke(seg, GOLD, 1, 0.78)
+	local thumb = new("Frame", {
+		Size = UDim2.new(1 / n, -4, 1, -4),
+		Position = UDim2.new(0, 2, 0, 2),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+	}, seg)
+	corner(thumb, 7)
+	gradient(thumb, GOLD_HI, GOLD, 90)
+	local btns = {}
+	local idxOf = {}
+	local function refresh(animate)
+		local i = idxOf[tbl[key]] or 1
+		local pos = UDim2.new((i - 1) / n, 2, 0, 2)
+		if animate then
+			tween(thumb, 0.14, { Position = pos })
+		else
+			thumb.Position = pos
+		end
+		for name, b in pairs(btns) do
+			b.TextColor3 = (tbl[key] == name) and DARK_TEXT or DIM
+		end
+	end
+	for i, name in ipairs(options) do
+		idxOf[name] = i
+		local b = new("TextButton", {
+			Position = UDim2.new((i - 1) / n, 2, 0, 2),
+			Size = UDim2.new(1 / n, -4, 1, -4),
+			BackgroundTransparency = 1,
+			Text = name,
+			Font = Enum.Font.GothamBold,
+			TextSize = 11,
+			BorderSizePixel = 0,
+			AutoButtonColor = false,
+		}, seg)
+		b.Activated:Connect(function()
+			tbl[key] = name
+			refresh(true)
+		end)
+		btns[name] = b
+	end
+	refresh(false)
+end
+
+local function addButton(page, text, onClick)
+	local b = new("TextButton", {
+		Size = UDim2.new(1, -6, 0, 42),
+		BackgroundColor3 = GOLD,
+		BackgroundTransparency = 0.88,
+		Text = text,
+		TextColor3 = GOLD_HI,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		BorderSizePixel = 0,
+		LayoutOrder = nextOrder(),
+	}, page)
+	corner(b, 9)
+	local st = stroke(b, GOLD, 1, 0.45)
+	hover(b, st, 0, 0.45)
+	b.Activated:Connect(function()
+		onClick(b)
+	end)
+	return b
+end
+
+local function addLabel(page, text, color, height)
+	return new("TextLabel", {
+		Size = UDim2.new(1, -6, 0, height or 24),
+		BackgroundTransparency = 1,
+		Text = text,
+		TextColor3 = color or TEXT,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextWrapped = true,
+		LayoutOrder = nextOrder(),
+	}, page)
+end
+
+local function addInfo(page, height)
+	local l = new("TextLabel", {
+		Size = UDim2.new(1, -6, 0, height),
+		BackgroundColor3 = ROW,
+		Text = "",
+		TextColor3 = TEXT,
+		Font = Enum.Font.Gotham,
+		TextSize = 13,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		BorderSizePixel = 0,
+		LayoutOrder = nextOrder(),
+	}, page)
+	corner(l, 9)
+	stroke(l, GOLD, 1, EDGE_T)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12), PaddingTop = UDim.new(0, 9) }, l)
+	return l
+end
+
+--==================== HOTKEYS (PC) ====================--
+-- binds[id] = Enum.KeyCode หรือ false (= ยังไม่ผูกปุ่ม)
+local binds = {}
+for _, def in ipairs(KEY_DEFS) do
+	binds[def.id] = def.default or false
+end
+
+local KEY_SHORT = {
+	LeftShift = "L-Shift",
+	RightShift = "R-Shift",
+	LeftControl = "L-Ctrl",
+	RightControl = "R-Ctrl",
+	LeftAlt = "L-Alt",
+	RightAlt = "R-Alt",
+	Return = "Enter",
+	CapsLock = "Caps",
+}
+local function keyText(k)
+	if not k then
+		return "None"
+	end
+	if KEY_SHORT[k.Name] then
+		return KEY_SHORT[k.Name]
+	end
+	if k.Name:sub(1, 6) ~= "Keypad" then
+		-- ตัวอักษร/ตัวเลขตามเลย์เอาต์คีย์บอร์ดของผู้เล่น (ถ้าไม่มี ใช้ชื่อปุ่มตรง ๆ)
+		local ok, s = pcall(function()
+			return UserInputService:GetStringForKeyCode(k)
+		end)
+		if ok and type(s) == "string" and s ~= "" then
+			return string.upper(s)
+		end
+	end
+	return k.Name
+end
+
+local keyPills = {} -- [id] = { pill, stroke }
+local listening = nil -- { id, token } เมื่อกำลังรอกดปุ่มใหม่
+local listenToken = 0
+local keyHeld = false -- ปุ่ม "Lock (Hold)" กำลังถูกกดค้าง
+
+local function refreshKeyPills()
+	for _, def in ipairs(KEY_DEFS) do
+		local p = keyPills[def.id]
+		if p then
+			if listening and listening.id == def.id then
+				p.pill.Text = "PRESS KEY..."
+				p.pill.TextColor3 = GOLD_HI
+				p.pill.BackgroundColor3 = Color3.fromRGB(58, 45, 22)
+				p.stroke.Transparency = 0
+			else
+				local k = binds[def.id]
+				p.pill.Text = keyText(k)
+				p.pill.TextColor3 = k and GOLD_HI or DIM
+				p.pill.BackgroundColor3 = FIELD
+				p.stroke.Transparency = 0.7
+			end
+		end
+	end
+end
+
+stopListening = function()
+	if listening then
+		listening = nil
+		refreshKeyPills()
+	end
+end
+
+local function startListening(id)
+	listenToken = listenToken + 1
+	local my = listenToken
+	listening = { id = id, token = my }
+	refreshKeyPills()
+	-- ไม่กดอะไรภายใน 10 วิ → เลิกรอเอง
+	task.delay(10, function()
+		if listening and listening.token == my then
+			stopListening()
+		end
+	end)
+end
+
+-- ผูกปุ่มใหม่: ถ้าปุ่มนั้นถูกใช้อยู่แล้ว → สลับกัน (อีกฟังก์ชันจะได้ปุ่มเดิมของฟังก์ชันนี้)
+local function setBind(id, kc)
+	local old = binds[id]
+	if kc then
+		for otherId, k in pairs(binds) do
+			if otherId ~= id and k == kc then
+				binds[otherId] = old or false
+			end
+		end
+	end
+	binds[id] = kc or false
+	keyHeld = false
+	refreshKeyPills()
+end
+
+-- เรียกตอนกำลังรอปุ่ม: Esc = ยกเลิก | Backspace/Delete = ล้างปุ่ม | ปุ่มอื่น = ผูกเลย
+local function captureKey(input)
+	local kc = input.KeyCode
+	local id = listening.id
+	if kc == Enum.KeyCode.Escape then
+		stopListening()
+	elseif kc == Enum.KeyCode.Backspace or kc == Enum.KeyCode.Delete then
+		setBind(id, nil)
+		stopListening()
+	elseif kc ~= Enum.KeyCode.Unknown then
+		setBind(id, kc)
+		stopListening()
+	end
+end
+
+local function resetBinds()
+	for _, def in ipairs(KEY_DEFS) do
+		binds[def.id] = def.default or false
+	end
+	keyHeld = false
+	stopListening()
+	refreshKeyPills()
+	toast("Keys reset")
+end
+
+-- กะพริบขอบช่องที่กำลังรอปุ่ม
+local function pulseListening(now)
+	if listening then
+		local p = keyPills[listening.id]
+		if p then
+			p.stroke.Transparency = 0.1 + 0.5 * (0.5 + 0.5 * math.sin(now * 7))
+		end
+	end
+end
+
+local function addKeyRow(page, def)
+	local r = new("TextButton", {
+		Size = UDim2.new(1, -6, 0, 42),
+		BackgroundColor3 = ROW,
+		Text = "",
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+		LayoutOrder = nextOrder(),
+	}, page)
+	local rs = rowSkin(r)
+	hover(r, rs, 0.6, EDGE_T)
+	rowLabel(r, def.label, 122)
+	local pill = new("TextLabel", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -8, 0.5, 0),
+		Size = UDim2.fromOffset(104, 28),
+		BackgroundColor3 = FIELD,
+		Text = "",
+		TextColor3 = GOLD_HI,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+	}, r)
+	corner(pill, 8)
+	keyPills[def.id] = { pill = pill, stroke = stroke(pill, GOLD, 1, 0.7) }
+	r.Activated:Connect(function()
+		if listening and listening.id == def.id then
+			stopListening() -- กดแถวเดิมซ้ำ = ยกเลิก
+		else
+			startListening(def.id)
+		end
+	end)
+end
+
+local function buildKeysPage()
+	local pKeys = newPage("Keys")
+	addSection(pKeys, "HOTKEYS (PC)")
+	local hint = new("TextLabel", {
+		Size = UDim2.new(1, -6, 0, 40),
+		BackgroundTransparency = 1,
+		Text = "Click a row, then press the new key.\nEsc = cancel   ·   Backspace = clear",
+		TextColor3 = DIM,
+		Font = Enum.Font.Gotham,
+		TextSize = 11,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		LayoutOrder = nextOrder(),
+	}, pKeys)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingTop = UDim.new(0, 2) }, hint)
+	for _, def in ipairs(KEY_DEFS) do
+		addKeyRow(pKeys, def)
+	end
+	addButton(pKeys, "RESET KEYS TO DEFAULT", function()
+		resetBinds()
+	end)
+	refreshKeyPills()
+end
+
+--==================== PAGES ====================--
+-- ลำดับแท็บ = ลำดับที่เรียก addTab → "Mode" อยู่ล่างสุดเสมอ
+addTab("Aimbot")
+addTab("Esp")
+if HAS_KEYBOARD then
+	addTab("Keys")
+end
+addTab("Finder")
+addTab("Mode")
+
+local setMode -- กำหนดค่าที่ส่วน MODE SWITCHING (ด้านล่าง)
+local modeUI = {} -- modeUI.refresh(animate) = ขยับสวิตช์ใหญ่ให้ตรงกับโหมดปัจจุบัน
+
+-- ---- Aimbot ----
+do
+	local pAim = newPage("Aimbot")
+	addSection(pAim, "LOCK")
+	addToggle(pAim, "Aimbot (Lock-On)", S, "AimEnabled")
+	addToggle(pAim, "Hold Right Mouse = Lock (PC)", S, "HoldRMB")
+	addToggle(pAim, "Show Floating Toggle", S, "FloatingToggle")
+	addSlider(pAim, "Button Size (Mobile)", 70, 150, S, "ButtonScale", "%")
+	addSection(pAim, "AIM TUNING")
+	addToggle(pAim, "Show FOV Circle", S, "ShowFOV")
+	addSlider(pAim, "FOV Circle Size", 20, 600, S, "FOVRadius")
+	addSlider(pAim, "Smoothness (0=Snap)", 0, 20, S, "Smoothness")
+	addSlider(pAim, "Max Auto-Aim Distance", 50, 5000, S, "MaxAimDistance")
+	addSection(pAim, "FILTERS")
+	addToggle(pAim, "Sticky Lock", S, "Sticky")
+	addToggle(pAim, "Wall Check", S, "WallCheck")
+	addToggle(pAim, "Team Check", S, "TeamCheck")
+	addSegment(pAim, "Target Priority", S, "Priority", { "Crosshair", "Distance" })
+	addSection(pAim, "TARGET PART")
+	local partLabel = addLabel(pAim, "Targeting: " .. S.AimPart, GOLD_HI, 22)
+	local grid = new("Frame", { Size = UDim2.new(1, -6, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = nextOrder() }, pAim)
+	new("UIGridLayout", { CellSize = UDim2.new(0.5, -4, 0, 36), CellPadding = UDim2.fromOffset(6, 6), SortOrder = Enum.SortOrder.LayoutOrder }, grid)
+	local partBtns = {}
+	local function refreshParts()
+		partLabel.Text = "Targeting: " .. S.AimPart
+		for name, p in pairs(partBtns) do
+			local on = (name == S.AimPart)
+			p.btn.BackgroundColor3 = on and Color3.fromRGB(58, 45, 22) or ROW
+			p.btn.TextColor3 = on and GOLD_HI or TEXT
+			p.stroke.Transparency = on and 0 or EDGE_T
+		end
+	end
+	for i, name in ipairs(PART_OPTIONS) do
+		local b = new("TextButton", {
+			BackgroundColor3 = ROW,
+			Text = (name == "Closest") and "Closest to Crosshair" or name,
+			TextColor3 = TEXT,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 12,
+			BorderSizePixel = 0,
+			AutoButtonColor = false,
+			LayoutOrder = i,
+		}, grid)
+		corner(b, 9)
+		local st = stroke(b, GOLD, 1.5, EDGE_T)
+		b.Activated:Connect(function()
+			S.AimPart = name
+			refreshParts()
+		end)
+		partBtns[name] = { btn = b, stroke = st }
+	end
+	refreshParts()
+end
+
+-- ---- ESP ----
+do
+	local pEsp = newPage("Esp")
+	addSection(pEsp, "VISUALS")
+	addToggle(pEsp, "ESP Enabled", S.ESP, "Enabled")
+	addToggle(pEsp, "Tracers", S.ESP, "Tracers")
+	addToggle(pEsp, "Names", S.ESP, "Names")
+	addToggle(pEsp, "Chams", S.ESP, "Chams")
+	addToggle(pEsp, "Distance (Studs)", S.ESP, "Distance")
+	addToggle(pEsp, "Team Check", S.ESP, "TeamCheck")
+	addSection(pEsp, "HEALTH")
+	addToggle(pEsp, "Show Health", S.ESP, "Health")
+	addSegment(pEsp, "Health Style", S.ESP, "HealthStyle", { "HP", "HP/MAXHP" })
+	addToggle(pEsp, "Health Bar", S.ESP, "HealthBar")
+	addSection(pEsp, "RANGE")
+	addSlider(pEsp, "Max ESP Range", 50, 5000, S.ESP, "MaxRange")
+end
+
+-- ---- Keys (เฉพาะเครื่องที่มีคีย์บอร์ด) ----
+if HAS_KEYBOARD then
+	buildKeysPage()
+end
+
+-- ---- Finder (หาเป้าที่หาย — ข้อความเปลี่ยนตามโหมด) ----
+local pFind = newPage("Finder")
+local finderSection = addSection(pFind, "FINDER")
+local statusLabel = addInfo(pFind, 124)
+
+local function rescanText()
+	local m = MODES[currentMode]
+	return "RESCAN " .. (m and string.upper(m.plural) or "TARGETS")
+end
+
+local function printTargets()
+	local m = MODES[currentMode]
+	local origin = Camera.CFrame.Position
+	local n = 0
+	print("========== [AssistHub] " .. m.label .. " LIST ==========")
+	for model, info in pairs(registry) do
+		n = n + 1
+		local r = fallbackPart(model)
+		print(string.format(
+			"%s | HP %d/%d | %s%s",
+			m.fullName(model, info),
+			math.floor(info.hum.Health),
+			math.floor(info.hum.MaxHealth),
+			r and (math.floor((r.Position - origin).Magnitude) .. " studs") or "NO BODY PART",
+			isSameTeam(model, info) and " | TEAMMATE" or ""
+		))
+	end
+	print("Total tracked:", n, "| StreamingEnabled:", workspace.StreamingEnabled)
+end
+
+local rescanBtn = addButton(pFind, "RESCAN", function(btn)
+	if currentMode then
+		MODES[currentMode].scan(runToken)
+	end
+	btn.Text = rescanText() .. "  OK"
+	task.delay(1, function()
+		btn.Text = rescanText()
+	end)
+end)
+local printBtn = addButton(pFind, "PRINT LIST (Output / F9)", function()
+	if currentMode then
+		printTargets()
+	end
+end)
+
+-- ---- Mode (สวิตช์ใหญ่ ซ้าย = Bot / ขวา = Player) ----
+local modeInfo
+do
+	local pMode = newPage("Mode")
+	addSection(pMode, "TARGET MODE")
+
+	local function addModeSwitch(page)
+		local wrap = new("Frame", {
+			Size = UDim2.new(1, -6, 0, 108),
+			BackgroundColor3 = ROW,
+			BorderSizePixel = 0,
+			LayoutOrder = nextOrder(),
+		}, page)
+		rowSkin(wrap)
+		local seg = new("Frame", {
+			Position = UDim2.fromOffset(8, 8),
+			Size = UDim2.new(1, -16, 1, -16),
+			BackgroundColor3 = FIELD,
+			BorderSizePixel = 0,
+		}, wrap)
+		corner(seg, 12)
+		stroke(seg, GOLD, 1, 0.7)
+		-- แผ่นทองที่สไลด์ไปหาฝั่งที่เลือก
+		local thumb = new("Frame", {
+			Size = UDim2.new(0.5, -6, 1, -6),
+			Position = UDim2.new(0, 3, 0, 3),
+			BackgroundColor3 = WHITE,
+			BorderSizePixel = 0,
+		}, seg)
+		corner(thumb, 10)
+		gradient(thumb, GOLD_HI, GOLD, 90)
+
+		local halves = {}
+		local function makeHalf(modeName, x, titleText, subText)
+			local b = new("TextButton", {
+				Position = UDim2.new(x, 0, 0, 0),
+				Size = UDim2.new(0.5, 0, 1, 0),
+				BackgroundTransparency = 1,
+				Text = "",
+				AutoButtonColor = false,
+				BorderSizePixel = 0,
+			}, seg)
+			local t = new("TextLabel", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.4),
+				Size = UDim2.new(1, 0, 0, 28),
+				BackgroundTransparency = 1,
+				Text = titleText,
+				TextColor3 = TEXT,
+				Font = Enum.Font.GothamBold,
+				TextSize = 22,
+			}, b)
+			local s = new("TextLabel", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.7),
+				Size = UDim2.new(1, 0, 0, 14),
+				BackgroundTransparency = 1,
+				Text = subText,
+				TextColor3 = DIM,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 10,
+			}, b)
+			b.Activated:Connect(function()
+				setMode(modeName)
+			end)
+			halves[modeName] = { title = t, sub = s }
+		end
+		makeHalf("Bot", 0, "BOT", "NPC / Humanoid")
+		makeHalf("Player", 0.5, "PLAYER", "Other players")
+
+		modeUI.refresh = function(animate)
+			local right = (currentMode == "Player")
+			local pos = UDim2.new(right and 0.5 or 0, 3, 0, 3)
+			if animate then
+				tween(thumb, 0.16, { Position = pos })
+			else
+				thumb.Position = pos
+			end
+			for name, h in pairs(halves) do
+				local on = (name == currentMode)
+				local tc = on and DARK_TEXT or TEXT
+				local sc = on and DARK_SUB or DIM
+				if animate then
+					tween(h.title, 0.16, { TextColor3 = tc })
+					tween(h.sub, 0.16, { TextColor3 = sc })
+				else
+					h.title.TextColor3 = tc
+					h.sub.TextColor3 = sc
+				end
+			end
+		end
+	end
+	addModeSwitch(pMode)
+
+	modeInfo = addInfo(pMode, 56)
+	local modeHint = new("TextLabel", {
+		Size = UDim2.new(1, -6, 0, 52),
+		BackgroundTransparency = 1,
+		Text = "Left = Bot (NPC Humanoids)  ·  Right = Player.\nSwitching clears the old mode first: ESP, highlights and lock are turned off, then the new mode starts.",
+		TextColor3 = DIM,
+		Font = Enum.Font.Gotham,
+		TextSize = 11,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		LayoutOrder = nextOrder(),
+	}, pMode)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingTop = UDim.new(0, 2) }, modeHint)
+end
+
+showPage("Aimbot")
+
+--==================== FLOATING BUTTONS ====================--
+-- โครงสร้างปุ่มลอย (กันบั๊กเด้งขึ้นเอง):
+--   holder  = กรอบโปร่งใส ใช้ "ย้ายตำแหน่ง" อย่างเดียว (ไม่มี UIScale เลย)
+--   └ btn   = ตัวปุ่มจริง อยู่กลาง holder + มี UIScale ไว้ย่อ/ขยาย (เอฟเฟกต์กด + ปรับขนาด)
+-- ตำแหน่งเก็บเป็น "สัดส่วนหน้าจอ" (0-1) → ไม่เพี้ยนตอนปรับขนาดปุ่ม/หมุนจอ
+local floaters = {}
+local DRAG_THRESHOLD = 10 -- px ที่นิ้วต้องขยับก่อนนับว่าเป็น "ลาก" (ไม่งั้นนับเป็นแตะ)
+
+local function applyFloater(f)
+	local screen = gui.AbsoluteSize
+	if screen.X <= 0 or screen.Y <= 0 then
+		return
+	end
+	local half = f.side / 2
+	local cx = math.clamp(f.px * screen.X, half, math.max(half, screen.X - half))
+	local cy = math.clamp(f.py * screen.Y, half, math.max(half, screen.Y - half))
+	f.px, f.py = cx / screen.X, cy / screen.Y
+	f.holder.Position = UDim2.fromScale(f.px, f.py)
+end
+
+-- แตะ = onTap | ลาก = ย้ายตำแหน่ง | กดแล้วมีเอฟเฟกต์ยุบ
+-- (ติดตามนิ้วเดียวกันตลอด → นิ้วที่กดจอยสติ๊กไม่ทำให้แตะพลาด)
+local function makeFloater(holder, btn, base, startPos, onTap)
+	local f = {
+		holder = holder,
+		base = base,
+		side = base,
+		px = startPos.X,
+		py = startPos.Y,
+		uiScale = new("UIScale", { Scale = 1 }, btn),
+		press = 1,
+		target = 1,
+	}
+	table.insert(floaters, f)
+	local dragInput, dragType, moved = nil, nil, false
+	local startPointer, grabPointer, grabPos
+
+	local function finish()
+		if not dragInput then
+			return
+		end
+		local wasMoved = moved
+		dragInput, dragType = nil, nil
+		f.target = 1
+		if not wasMoved then
+			onTap()
+		end
+	end
+
+	btn.InputBegan:Connect(function(input)
+		if dragInput == nil and isPointer(input) then
+			dragInput, dragType, moved = input, input.UserInputType, false
+			startPointer = Vector2.new(input.Position.X, input.Position.Y)
+			f.target = 0.92
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragInput and isSameMove(input, dragInput, dragType) then
+			local p = Vector2.new(input.Position.X, input.Position.Y)
+			if not moved and (p - startPointer).Magnitude > DRAG_THRESHOLD then
+				-- เริ่มลากตรงนี้: จำจุดนิ้ว + ตำแหน่งปุ่ม ณ ตอนนี้ → ปุ่มไม่กระโดดตอนเริ่มลาก
+				moved = true
+				grabPointer = p
+				grabPos = Vector2.new(f.px, f.py)
+			end
+			if moved then
+				local screen = gui.AbsoluteSize
+				local d = p - grabPointer
+				f.px = grabPos.X + d.X / math.max(screen.X, 1)
+				f.py = grabPos.Y + d.Y / math.max(screen.Y, 1)
+				applyFloater(f)
+			end
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if dragInput and isSameEnd(input, dragInput, dragType) then
+			finish()
+		end
+	end)
+	applyFloater(f)
+	return f
+end
+
+local function updateFloaters(dt)
+	local k = math.min(1, dt * 20)
+	local sc = S.ButtonScale / 100
+	for _, f in ipairs(floaters) do
+		f.press = f.press + (f.target - f.press) * k
+		f.uiScale.Scale = sc * f.press
+		f.side = f.base * sc
+		f.holder.Size = UDim2.fromOffset(f.side, f.side)
+		applyFloater(f)
+	end
+end
+
+local setPanelOpen
+
+-- ---------- ปุ่ม MENU ----------
+local menuGrad, refreshMenuBtn
+do
+	local menuHolder = new("Frame", {
+		Name = "MenuHolder",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.12, 0.3),
+		Size = UDim2.fromOffset(70, 70),
+		BackgroundTransparency = 1,
+		ZIndex = 20,
+	}, gui)
+	local menuBtn = new("TextButton", {
+		Name = "MenuBtn",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(70, 70),
+		BackgroundColor3 = WHITE,
+		Text = "",
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+		ZIndex = 20,
+	}, menuHolder)
+	corner(menuBtn, 20)
+	gradient(menuBtn, Color3.fromRGB(40, 33, 23), Color3.fromRGB(11, 9, 7), 90)
+	local menuStroke = stroke(menuBtn, WHITE, 2.5, 0)
+	menuGrad = goldGradient(menuStroke, 45)
+	-- ขอบในบางเฉียบ ให้ดูเป็นตลับทอง
+	local menuInner = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(1, -12, 1, -12),
+		BackgroundTransparency = 1,
+	}, menuBtn)
+	corner(menuInner, 15)
+	stroke(menuInner, GOLD, 1, 0.75)
+
+	local burger = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.38),
+		Size = UDim2.fromOffset(30, 22),
+		BackgroundTransparency = 1,
+	}, menuBtn)
+	local burgerBars = {}
+	local barWidths = { 30, 22, 30 }
+	for i = 0, 2 do
+		local w = barWidths[i + 1]
+		local bar = new("Frame", {
+			Position = UDim2.fromOffset((30 - w) / 2, i * 9),
+			Size = UDim2.fromOffset(w, 4),
+			BackgroundColor3 = TEXT,
+			BorderSizePixel = 0,
+		}, burger)
+		corner(bar, 2)
+		table.insert(burgerBars, bar)
+	end
+	local menuLabel = new("TextLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.8),
+		Size = UDim2.new(1, 0, 0, 12),
+		BackgroundTransparency = 1,
+		Text = "MENU",
+		TextColor3 = DIM,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+	}, menuBtn)
+
+	refreshMenuBtn = function()
+		local open = panel.Visible
+		menuLabel.Text = open and "CLOSE" or "MENU"
+		menuLabel.TextColor3 = open and GOLD_HI or DIM
+		for _, bar in ipairs(burgerBars) do
+			bar.BackgroundColor3 = open and GOLD or TEXT
+		end
+	end
+
+	setPanelOpen = function(open)
+		if open then
+			panel.Visible = true
+			panelScale.Scale = 0.92
+			tween(panelScale, 0.16, { Scale = 1 })
+		else
+			panel.Visible = false
+			stopListening()
+		end
+		refreshMenuBtn()
+	end
+
+	makeFloater(menuHolder, menuBtn, 70, Vector2.new(0.12, 0.3), function()
+		setPanelOpen(not panel.Visible)
+	end)
+	closeBtn.Activated:Connect(function()
+		setPanelOpen(false)
+	end)
+end
+
+-- ---------- ปุ่ม LOCK ----------
+-- แดงทับทิม = ปิดล็อก | ทองอำพัน = เปิดล็อกแต่ยังไม่เจอเป้า | ทองแชมเปญสว่าง = ล็อกเป้าอยู่
+local lockHolder, floatStroke, glowStroke, refreshFloat
+do
+	lockHolder = new("Frame", {
+		Name = "LockHolder",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.8, 0.62),
+		Size = UDim2.fromOffset(88, 88),
+		BackgroundTransparency = 1,
+		ZIndex = 20,
+		Visible = S.FloatingToggle,
+	}, gui)
+	local floatBtn = new("TextButton", {
+		Name = "LockBtn",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(88, 88),
+		BackgroundColor3 = WHITE,
+		Text = "",
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+		ZIndex = 20,
+	}, lockHolder)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, floatBtn)
+	gradient(floatBtn, Color3.fromRGB(40, 33, 23), Color3.fromRGB(10, 8, 6), 90)
+	floatStroke = stroke(floatBtn, OFF_C, 3.5, 0.1)
+
+	-- วงรัศมีนอกปุ่ม (กะพริบตอนล็อก) + ขอบทองบางด้านใน
+	local glow = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(1, 12, 1, 12),
+		BackgroundTransparency = 1,
+	}, floatBtn)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, glow)
+	glowStroke = stroke(glow, OFF_C, 3, 0.9)
+	local lockInner = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(1, -14, 1, -14),
+		BackgroundTransparency = 1,
+	}, floatBtn)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, lockInner)
+	stroke(lockInner, GOLD, 1, 0.78)
+
+	local icon = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.4),
+		Size = UDim2.fromOffset(48, 48),
+		BackgroundTransparency = 1,
+	}, floatBtn)
+	local ring = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(30, 30),
+		BackgroundTransparency = 1,
+	}, icon)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, ring)
+	local ringStroke = stroke(ring, OFF_C, 2.5, 0)
+	local crossParts = {}
+	local function addCrossPart(anchor, pos, size)
+		local p = new("Frame", {
+			AnchorPoint = anchor,
+			Position = pos,
+			Size = size,
+			BackgroundColor3 = OFF_C,
+			BorderSizePixel = 0,
+		}, icon)
+		table.insert(crossParts, p)
+	end
+	addCrossPart(Vector2.new(0.5, 0), UDim2.fromScale(0.5, 0), UDim2.fromOffset(3, 10))
+	addCrossPart(Vector2.new(0.5, 1), UDim2.fromScale(0.5, 1), UDim2.fromOffset(3, 10))
+	addCrossPart(Vector2.new(0, 0.5), UDim2.fromScale(0, 0.5), UDim2.fromOffset(10, 3))
+	addCrossPart(Vector2.new(1, 0.5), UDim2.fromScale(1, 0.5), UDim2.fromOffset(10, 3))
+	local dot = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(6, 6),
+		BackgroundColor3 = OFF_C,
+		BorderSizePixel = 0,
+	}, icon)
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
+	table.insert(crossParts, dot)
+
+	local floatLabel = new("TextLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.81),
+		Size = UDim2.new(1, 0, 0, 12),
+		BackgroundTransparency = 1,
+		Text = "LOCK OFF",
+		TextColor3 = OFF_C,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+	}, floatBtn)
+
+	local lastFloatState = ""
+	refreshFloat = function()
+		local col, txt
+		if not lockActive then
+			col, txt = OFF_C, "LOCK OFF"
+		elseif hasTarget then
+			col, txt = LOCKED_C, "LOCKED"
+		else
+			col, txt = WARN_C, "LOCK ON"
+		end
+		if txt == lastFloatState then
+			return
+		end
+		lastFloatState = txt
+		floatStroke.Color = col
+		ringStroke.Color = col
+		glowStroke.Color = col
+		floatLabel.Text = txt
+		floatLabel.TextColor3 = col
+		for _, p in ipairs(crossParts) do
+			p.BackgroundColor3 = col
+		end
+		-- ล็อกเป้าอยู่ → จุดกลางโตขึ้นให้เห็นชัดแม้มองผ่าน ๆ
+		local d = (txt == "LOCKED") and 10 or 6
+		dot.Size = UDim2.fromOffset(d, d)
+	end
+
+	makeFloater(lockHolder, floatBtn, 88, Vector2.new(0.8, 0.62), function()
+		lockToggled = not lockToggled
+	end)
+end
+
+refreshMenuBtn()
+
+--==================== INPUT (PC) ====================--
+local KEY_ACTIONS = {
+	Menu = function()
+		setPanelOpen(not panel.Visible)
+	end,
+	LockToggle = function()
+		if not S.AimEnabled then
+			toast("Aimbot is OFF")
+			return
+		end
+		lockToggled = not lockToggled
+		toast(lockToggled and "Lock: ON" or "Lock: OFF")
+	end,
+	Aim = function()
+		S.AimEnabled = not S.AimEnabled
+		syncToggles()
+		toast(S.AimEnabled and "Aimbot: ON" or "Aimbot: OFF")
+	end,
+	ESP = function()
+		S.ESP.Enabled = not S.ESP.Enabled
+		syncToggles()
+		toast(S.ESP.Enabled and "ESP: ON" or "ESP: OFF")
+	end,
+}
+
+UserInputService.InputBegan:Connect(function(input, gp)
+	local t = input.UserInputType
+	if t == Enum.UserInputType.MouseButton2 then
+		rmbDown = true
+		return
+	end
+	if t ~= Enum.UserInputType.Keyboard then
+		return
+	end
+	if listening then
+		captureKey(input) -- กำลังรอปุ่มใหม่ (รับทุกปุ่ม ไม่สนว่าเกมจับไปแล้วหรือยัง)
+		return
+	end
+	if gp then
+		return -- กำลังพิมพ์แชท / UI ของเกมจับปุ่มไปแล้ว
+	end
+	local kc = input.KeyCode
+	if kc == Enum.KeyCode.Unknown then
+		return
+	end
+	if binds.LockHold and binds.LockHold == kc then
+		keyHeld = true
+	end
+	for _, def in ipairs(KEY_DEFS) do
+		local action = KEY_ACTIONS[def.id]
+		if action and binds[def.id] == kc then
+			action()
+		end
+	end
+end)
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		rmbDown = false
+	elseif input.UserInputType == Enum.UserInputType.Keyboard and binds.LockHold and input.KeyCode == binds.LockHold then
+		keyHeld = false
+	end
+end)
+
+--==================== ESP UPDATE ====================--
+local updateESP
+do
+	local function setLine(frame, a, b)
+		local d = b - a
+		frame.Size = UDim2.fromOffset(d.Magnitude, 1.5)
+		frame.Position = UDim2.fromOffset((a.X + b.X) / 2, (a.Y + b.Y) / 2)
+		frame.Rotation = math.deg(math.atan2(d.Y, d.X))
+	end
+
+	local function tagLabel(parent, order, height, size)
+		return new("TextLabel", {
+			Size = UDim2.new(1, 0, 0, height),
+			BackgroundTransparency = 1,
+			TextColor3 = WHITE,
+			TextStrokeTransparency = 0.25,
+			Font = Enum.Font.GothamBold,
+			TextSize = size,
+			LayoutOrder = order,
+		}, parent)
+	end
+
+	-- ป้ายเหนือหัวเป้า: ชื่อ / หลอดเลือด / HP / ระยะ
+	local function createTag()
+		local frame = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 1),
+			Size = UDim2.fromOffset(140, 62),
+			BackgroundTransparency = 1,
+			Visible = false,
+		}, espLayer)
+		new("UIListLayout", {
+			FillDirection = Enum.FillDirection.Vertical,
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
+			VerticalAlignment = Enum.VerticalAlignment.Bottom,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, 1),
+		}, frame)
+		local nameL = tagLabel(frame, 1, 14, 13)
+		nameL.TextColor3 = GOLD_HI
+		local barBack = new("Frame", {
+			Size = UDim2.fromOffset(86, 7),
+			BackgroundColor3 = Color3.fromRGB(10, 8, 6),
+			BackgroundTransparency = 0.1,
+			BorderSizePixel = 0,
+			LayoutOrder = 2,
+		}, frame)
+		corner(barBack, 4)
+		stroke(barBack, GOLD, 1, 0.35)
+		local barFill = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = HP_FULL, BorderSizePixel = 0 }, barBack)
+		corner(barFill, 4)
+		gradient(barFill, WHITE, Color3.fromRGB(186, 180, 170), 90)
+		local hpL = tagLabel(frame, 3, 14, 12)
+		local distL = tagLabel(frame, 4, 14, 12)
+		distL.TextColor3 = Color3.fromRGB(214, 204, 184)
+		return { frame = frame, name = nameL, barBack = barBack, barFill = barFill, hp = hpL, dist = distL }
+	end
+
+	updateESP = function()
+		local m = MODES[currentMode]
+		if not m then
+			return
+		end
+		local E = S.ESP
+		local camPos = Camera.CFrame.Position
+		local vp = Camera.ViewportSize
+		local lineFrom = Vector2.new(vp.X / 2, vp.Y)
+		local myChar = LocalPlayer.Character
+		local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+		local from3 = myRoot and myRoot.Position or camPos
+
+		for model, info in pairs(registry) do
+			local root = isAlive(model, info) and fallbackPart(model) or nil
+			local show = root ~= nil and E.Enabled
+			local dist = 0
+			if show then
+				dist = (root.Position - from3).Magnitude
+				if dist > E.MaxRange or (E.TeamCheck and isSameTeam(model, info)) then
+					show = false
+				end
+			end
+
+			-- Chams (Highlight)
+			if show and E.Chams then
+				if not info.hl or info.hl.Parent ~= model then
+					if info.hl then
+						info.hl:Destroy()
+					end
+					info.hl = new("Highlight", {
+						Name = "AssistHubHL",
+						Adornee = model,
+						FillColor = ENEMY_COLOR,
+						FillTransparency = 0.5,
+						OutlineColor = GOLD_HI,
+						DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+					}, model)
+				end
+				info.hl.Enabled = true
+			elseif info.hl then
+				info.hl.Enabled = false
+			end
+
+			-- ตำแหน่งบนจอ
+			local sp, on, spTag
+			if show then
+				sp, on = Camera:WorldToViewportPoint(root.Position)
+				spTag = Camera:WorldToViewportPoint(root.Position + Vector3.new(0, 3.2, 0))
+			end
+
+			-- ป้าย: ชื่อ / เลือด / ระยะ
+			local wantTag = show and on and (E.Names or E.Distance or E.Health)
+			if wantTag then
+				if not info.tag then
+					info.tag = createTag()
+				end
+				local t = info.tag
+				t.name.Visible = E.Names
+				t.name.Text = m.nameOf(model, info)
+				t.dist.Visible = E.Distance
+				if E.Distance then
+					t.dist.Text = math.floor(dist) .. " studs"
+				end
+				t.hp.Visible = E.Health
+				t.barBack.Visible = E.Health and E.HealthBar
+				if E.Health then
+					local h = info.hum
+					local mx = math.max(1, h.MaxHealth)
+					local ratio = math.clamp(h.Health / mx, 0, 1)
+					local col = hpColor(ratio)
+					local cur = math.max(0, math.ceil(h.Health))
+					if E.HealthStyle == "HP" then
+						t.hp.Text = "HP " .. cur
+					else
+						t.hp.Text = "HP " .. cur .. "/" .. math.ceil(mx)
+					end
+					t.hp.TextColor3 = col
+					t.barFill.Size = UDim2.fromScale(ratio, 1)
+					t.barFill.BackgroundColor3 = col
+				end
+				t.frame.Position = UDim2.fromOffset(spTag.X, spTag.Y)
+				t.frame.Visible = true
+			elseif info.tag then
+				info.tag.frame.Visible = false
+			end
+
+			-- Tracers
+			local wantLine = show and E.Tracers and sp.Z > 0
+			if wantLine then
+				if not info.line then
+					info.line = new("Frame", {
+						AnchorPoint = Vector2.new(0.5, 0.5),
+						BackgroundColor3 = GOLD,
+						BorderSizePixel = 0,
+					}, espLayer)
+				end
+				setLine(info.line, lineFrom, Vector2.new(sp.X, sp.Y))
+				info.line.Visible = true
+			elseif info.line then
+				info.line.Visible = false
+			end
+		end
+	end
+end
+
+--==================== AIM ====================--
+local updateAim
+do
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.RespectCanCollide = true
+
+	local function isVisible(part, model, camPos)
+		local filter = { model }
+		if LocalPlayer.Character then
+			table.insert(filter, LocalPlayer.Character)
+		end
+		rayParams.FilterDescendantsInstances = filter
+		return workspace:Raycast(camPos, part.Position - camPos, rayParams) == nil
+	end
+
+	-- คืนค่า (part, score) ถ้าเป้านี้ล็อกได้
+	local function candidate(model, info, camPos, center, needFOV)
+		if not isAlive(model, info) then
+			return nil
+		end
+		if S.TeamCheck and isSameTeam(model, info) then
+			return nil
+		end
+		local part
+		if S.AimPart == "Closest" then
+			part = closestPart(model, center)
+		else
+			part = getPart(model, S.AimPart)
+		end
+		if not part then
+			return nil
+		end
+		local dist = (part.Position - camPos).Magnitude
+		if dist > S.MaxAimDistance then
+			return nil
+		end
+		local sp, on = Camera:WorldToViewportPoint(part.Position)
+		if not on then
+			return nil
+		end
+		local d2 = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+		if needFOV and d2 > S.FOVRadius then
+			return nil
+		end
+		if S.WallCheck and not isVisible(part, model, camPos) then
+			return nil
+		end
+		return part, (S.Priority == "Distance") and dist or d2
+	end
+
+	local function aimAt(pos, dt)
+		local cf = Camera.CFrame
+		local goal = CFrame.lookAt(cf.Position, pos)
+		if S.Smoothness <= 0 then
+			Camera.CFrame = goal
+		else
+			local base = 1 / (S.Smoothness + 1)
+			local alpha = 1 - (1 - base) ^ (dt * 60)
+			Camera.CFrame = cf:Lerp(goal, alpha)
+		end
+	end
+
+	updateAim = function(dt)
+		fov.Visible = S.ShowFOV and S.AimEnabled
+		fov.Size = UDim2.fromOffset(S.FOVRadius * 2, S.FOVRadius * 2)
+		lockHolder.Visible = S.FloatingToggle and S.AimEnabled
+
+		lockActive = S.AimEnabled and (lockToggled or keyHeld or (S.HoldRMB and rmbDown))
+		if not lockActive then
+			currentTarget = nil
+			hasTarget = false
+			return
+		end
+
+		local camPos = Camera.CFrame.Position
+		local center = Camera.ViewportSize / 2
+		local part
+
+		if S.Sticky and currentTarget and registry[currentTarget] then
+			part = candidate(currentTarget, registry[currentTarget], camPos, center, false)
+		end
+		if not part then
+			currentTarget = nil
+			local bestScore = math.huge
+			for model, info in pairs(registry) do
+				local p, score = candidate(model, info, camPos, center, true)
+				if p and score < bestScore then
+					bestScore = score
+					part = p
+					currentTarget = model
+				end
+			end
+		end
+
+		hasTarget = part ~= nil
+		if part then
+			aimAt(part.Position, dt)
+		end
+	end
+end
+
+--==================== STATUS (แท็บ Finder + แท็บ Mode) ====================--
+local function updateStatus()
+	local m = MODES[currentMode]
+	if not m then
+		return
+	end
+	local total, alive, noPart, nearest = 0, 0, 0, math.huge
+	local origin = Camera.CFrame.Position
+	for model, info in pairs(registry) do
+		total = total + 1
+		if isAlive(model, info) then
+			alive = alive + 1
+			local r = fallbackPart(model)
+			if r then
+				nearest = math.min(nearest, (r.Position - origin).Magnitude)
+			else
+				noPart = noPart + 1
+			end
+		end
+	end
+	statusLabel.Text = string.format(
+		"Tracked %s: %d (alive %d)\nNo body part: %d\nNearest: %s\nStreamingEnabled: %s\n(If true, far-away %s may not be loaded on the client)",
+		m.plural,
+		total,
+		alive,
+		noPart,
+		(nearest < math.huge) and (math.floor(nearest) .. " studs") or "-",
+		tostring(workspace.StreamingEnabled),
+		m.plural
+	)
+	modeInfo.Text = string.format("Active mode: %s\nTracked: %d  (alive %d)", m.label, total, alive)
+end
+
+--==================== MODE SWITCHING ====================--
+local function applyModeUI(animate)
+	local m = MODES[currentMode]
+	modeSubtitle.Text = m.label .. " MODE"
+	finderSection.Text = m.label .. " FINDER"
+	rescanBtn.Text = rescanText()
+	printBtn.Text = "PRINT " .. string.upper(m.singular) .. " LIST (Output / F9)"
+	if modeUI.refresh then
+		modeUI.refresh(animate)
+	end
+end
+
+setMode = function(name)
+	if not MODES[name] or name == currentMode then
+		return
+	end
+	local first = (currentMode == nil)
+
+	if currentMode then
+		-- (1) จำค่า Team Check ของโหมดเก่าไว้ (แต่ละโหมดมีค่าของตัวเอง)
+		modeTeam[currentMode].Aim = S.TeamCheck
+		modeTeam[currentMode].ESP = S.ESP.TeamCheck
+		-- (2) ลบการทำงานของโหมดเก่าให้เกลี้ยง: connection / ลูปสแกน / ESP / Highlight / ป้าย / เส้น / เป้าทั้งหมด
+		stopMode()
+	end
+
+	-- (3) เคลียร์สถานะล็อก → ไม่มีเป้าเก่าค้าง และไม่ล็อกต่อโดยไม่ได้ตั้งใจ
+	lockToggled, lockActive, hasTarget = false, false, false
+	keyHeld = false
+	currentTarget = nil
+	stopListening()
+
+	-- (4) เข้าโหมดใหม่
+	currentMode = name
+	S.TeamCheck = modeTeam[name].Aim
+	S.ESP.TeamCheck = modeTeam[name].ESP
+	syncToggles() -- สวิตช์ Team Check ในเมนูขยับตามค่าของโหมดใหม่
+	startMode()
+
+	applyModeUI(not first)
+	updateStatus()
+	if not first then
+		toast("Mode: " .. MODES[name].label)
+	end
+end
+
+setMode(START_MODE)
+
+--==================== MAIN LOOP ====================--
+pcall(function()
+	RunService:UnbindFromRenderStep("AssistHub")
+end)
+local statusTimer = 0
+RunService:BindToRenderStep("AssistHub", Enum.RenderPriority.Camera.Value + 1, function(dt)
+	updateFloaters(dt)
+	if not Camera then
+		return
+	end
+	updateESP()
+	updateAim(dt)
+
+	-- สีปุ่ม LOCK + เอฟเฟกต์กะพริบเบา ๆ ตอนเปิดล็อก
+	refreshFloat()
+	local now = os.clock()
+	if lockHolder.Visible then
+		if lockActive then
+			local pulse = 0.5 + 0.5 * math.sin(now * (hasTarget and 8 or 4))
+			floatStroke.Transparency = 0.05 + 0.3 * pulse
+			glowStroke.Transparency = 0.55 + 0.35 * pulse
+		else
+			floatStroke.Transparency = 0.1
+			glowStroke.Transparency = 0.9
+		end
+	end
+
+	pulseListening(now)
+
+	-- ประกายทองวิ่งรอบขอบ (หมุนเฉดสีของเส้นขอบ)
+	local spin = (now * 45) % 360
+	menuGrad.Rotation = spin
+	if panel.Visible then
+		cardGrad.Rotation = spin
+	end
+	if fov.Visible then
+		fovGrad.Rotation = spin
+	end
+
+	statusTimer = statusTimer + dt
+	if statusTimer > 0.5 then
+		statusTimer = 0
+		updateStatus()
+	end
+end)
+
+local trackedCount = 0
+for _ in pairs(registry) do
+	trackedCount = trackedCount + 1
+end
+print("[AssistHub v4.0 GOLD] loaded — mode:", currentMode, "| tracked:", trackedCount)
